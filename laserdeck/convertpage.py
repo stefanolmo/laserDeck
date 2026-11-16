@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import fields
 
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QRectF, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -28,6 +28,31 @@ ORDERS = [("engrave-first", "Fill first, lines last (recommended)"), ("listed", 
 LASER_CMDS = [("M4", "M4 dynamic power (recommended)"), ("M3", "M3 constant power")]
 LINE_FIELDS = ("line_power", "line_speed", "line_passes", "offset")
 FILL_FIELDS = ("fill_power", "fill_speed", "fill_passes", "interval", "angle", "bidir", "crosshatch", "overscan")
+
+
+class Switch(QCheckBox):
+    """Toggle switch (pill with a sliding knob) with a text label."""
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        return QSize(44 + 10 + self.fontMetrics().horizontalAdvance(self.text()), max(sh.height(), 24))
+
+    def paintEvent(self, _ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        on, en = self.isChecked(), self.isEnabled()
+        h = 20
+        y = (self.height() - h) / 2
+        track = QColor(theme.ACCENT if on else "#2c3847")
+        if not en:
+            track = QColor("#1c3a37" if on else "#171e26")
+        p.setPen(Qt.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(QRectF(0, y, 38, h), h / 2, h / 2)
+        p.setBrush(QColor("#04211d" if on else theme.TEXT) if en else QColor("#4d5866"))
+        p.drawEllipse(QRectF(20 if on else 2, y + 2, h - 4, h - 4))
+        p.setPen(QColor(theme.TEXT if en else "#4d5866"))
+        p.drawText(QRectF(48, 0, self.width() - 48, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text())
 
 
 class GenThread(QThread):
@@ -179,9 +204,17 @@ class ConverterPage(QWidget):
             row.addWidget(bt)
         c.body.addLayout(row)
         row = QHBoxLayout()
+        self.chk_enabled = Switch("Selected paths enabled")
+        self.chk_enabled.setToolTip("Switch the selected paths on or off. Switching off keeps their settings: switching on "
+                                    "restores the previous mode and values.")
+        self.chk_enabled.toggled.connect(self._enable_toggled)
+        row.addWidget(self.chk_enabled)
+        row.addStretch()
+        c.body.addLayout(row)
+        row = QHBoxLayout()
         row.addWidget(QLabel("Set selection to"))
         self.quick: dict[str, QToolButton] = {}
-        for key, _ in MODES:
+        for key, _ in MODES[1:]:
             bt = QToolButton()
             bt.setText(MODE_SHORT[key])
             bt.setStyleSheet(f"padding:5px 8px; border-bottom: 2px solid {MODE_COLORS[key]};")
@@ -198,17 +231,12 @@ class ConverterPage(QWidget):
         self.sel_label.setWordWrap(True)
         c.body.addWidget(self.sel_label)
         self.w: dict[str, QWidget] = {}
-        self.w["mode"] = _combo(MODES)
+        self.w["mode"] = _combo(MODES[1:])      # "off" is the switch
         g = QGridLayout()
         g.setHorizontalSpacing(8)
         g.setVerticalSpacing(6)
         g.addWidget(QLabel("What to do"), 0, 0)
         g.addWidget(self.w["mode"], 0, 1)
-        self.btn_on = QPushButton("On")
-        self.btn_on.setObjectName("primary")
-        self.btn_on.setToolTip("Turn the disabled paths back on with their previous mode and settings")
-        self.btn_on.clicked.connect(self._turn_on)
-        g.addWidget(self.btn_on, 0, 2)
         c.body.addLayout(g)
 
         def group(title, rows):
@@ -579,14 +607,19 @@ class ConverterPage(QWidget):
         sids = [s for s in self.selected_sids() if s in self.settings]
         self._loading = True
         en = bool(sids)
+        any_on = any(self.settings[s].mode != "off" for s in sids)
         for wid in self.w.values():
-            wid.setEnabled(en)
+            wid.setEnabled(en and any_on)
         for b in self.quick.values():
             b.setEnabled(en)
+        self.chk_enabled.setEnabled(en)
+        self.chk_enabled.setChecked(en and all(self.settings[s].mode != "off" for s in sids))
         if en:
             st = self.settings[sids[0]]
             for fname, wid in self.w.items():
                 v = getattr(st, fname)
+                if fname == "mode" and v == "off":
+                    v = st.last_mode
                 if isinstance(wid, QComboBox):
                     wid.setCurrentIndex(max(0, wid.findData(v)))
                 elif isinstance(wid, QCheckBox):
@@ -594,7 +627,6 @@ class ConverterPage(QWidget):
                 else:
                     wid.setValue(v)
             modes = {self.settings[s].mode for s in sids}
-            self.btn_on.setVisible("off" in modes)
             self.grp_line.setVisible(any(m in ("line", "both") for m in modes))
             self.grp_fill.setVisible(any(m in ("fill", "both") for m in modes))
             names = ", ".join(sids[:3]) + (f" … (+{len(sids) - 3})" if len(sids) > 3 else "")
@@ -602,7 +634,6 @@ class ConverterPage(QWidget):
                                    + ("\nMixed values: the panel shows the first path; an edited field is applied to all."
                                       if len(sids) > 1 else ""))
         else:
-            self.btn_on.setVisible(False)
             self.grp_line.setVisible(True)
             self.grp_fill.setVisible(True)
             self.sel_label.setText("Select one or more paths (list or click in the drawing) to set what the laser does")
@@ -623,11 +654,17 @@ class ConverterPage(QWidget):
             self._load_widgets()
         self._schedule()
 
-    def _turn_on(self) -> None:
-        sids = [s for s in self.selected_sids() if s in self.settings and self.settings[s].mode == "off"]
+    def _enable_toggled(self, on: bool) -> None:
+        if self._loading:
+            return
+        sids = [s for s in self.selected_sids() if s in self.settings]
         for sid in sids:
             st = self.settings[sid]
-            st.mode = st.last_mode if st.last_mode != "off" else "line"
+            if on and st.mode == "off":
+                st.mode = st.last_mode if st.last_mode != "off" else "line"
+            elif not on and st.mode != "off":
+                st.last_mode = st.mode           # settings stay untouched, switching on restores them
+                st.mode = "off"
             self._refresh_row(sid)
         if sids:
             self._sync_design()
