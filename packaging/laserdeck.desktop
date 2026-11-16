@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Laser Deck
+GenericName=GRBL laser sender
+GenericName[it]=Sender e convertitore SVG per laser GRBL
+Comment=Convert SVG to laser G-code and send it to a GRBL laser engraver
+Comment[it]=Converti SVG in G-code laser e invialo a un laser GRBL
+Exec=@EXEC@ %f
+Icon=@ICON@
+Terminal=false
+Categories=Graphics;Engineering;
+MimeType=text/x-gcode;image/svg+xml;
+StartupWMClass=laserdeck
