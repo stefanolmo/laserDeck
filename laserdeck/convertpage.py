@@ -204,6 +204,11 @@ class ConverterPage(QWidget):
         g.setVerticalSpacing(6)
         g.addWidget(QLabel("What to do"), 0, 0)
         g.addWidget(self.w["mode"], 0, 1)
+        self.btn_on = QPushButton("On")
+        self.btn_on.setObjectName("primary")
+        self.btn_on.setToolTip("Turn the disabled paths back on with their previous mode and settings")
+        self.btn_on.clicked.connect(self._turn_on)
+        g.addWidget(self.btn_on, 0, 2)
         c.body.addLayout(g)
 
         def group(title, rows):
@@ -589,6 +594,7 @@ class ConverterPage(QWidget):
                 else:
                     wid.setValue(v)
             modes = {self.settings[s].mode for s in sids}
+            self.btn_on.setVisible("off" in modes)
             self.grp_line.setVisible(any(m in ("line", "both") for m in modes))
             self.grp_fill.setVisible(any(m in ("fill", "both") for m in modes))
             names = ", ".join(sids[:3]) + (f" … (+{len(sids) - 3})" if len(sids) > 3 else "")
@@ -596,6 +602,7 @@ class ConverterPage(QWidget):
                                    + ("\nMixed values: the panel shows the first path; an edited field is applied to all."
                                       if len(sids) > 1 else ""))
         else:
+            self.btn_on.setVisible(False)
             self.grp_line.setVisible(True)
             self.grp_fill.setVisible(True)
             self.sel_label.setText("Select one or more paths (list or click in the drawing) to set what the laser does")
@@ -606,12 +613,26 @@ class ConverterPage(QWidget):
         if not sids:
             return
         for sid in sids:
-            setattr(self.settings[sid], fname, value)
+            st = self.settings[sid]
+            if fname == "mode" and value == "off" and st.mode != "off":
+                st.last_mode = st.mode             # remembered for the «On» button; the other settings stay untouched
+            setattr(st, fname, value)
             self._refresh_row(sid)
         if fname == "mode":
             self._sync_design()
             self._load_widgets()
         self._schedule()
+
+    def _turn_on(self) -> None:
+        sids = [s for s in self.selected_sids() if s in self.settings and self.settings[s].mode == "off"]
+        for sid in sids:
+            st = self.settings[sid]
+            st.mode = st.last_mode if st.last_mode != "off" else "line"
+            self._refresh_row(sid)
+        if sids:
+            self._sync_design()
+            self._load_widgets()
+            self._schedule()
 
     def _field_edited(self, fname: str, value) -> None:
         if self._loading:
@@ -639,7 +660,7 @@ class ConverterPage(QWidget):
         if not ok or not name.strip():
             return
         st = self.settings[sids[0]]
-        data = {f.name: getattr(st, f.name) for f in fields(st) if f.name != "mode"}
+        data = {f.name: getattr(st, f.name) for f in fields(st) if f.name not in ("mode", "last_mode")}
         p = self._presets()
         p[name.strip()] = data
         self.qs.setValue("conv/presets", json.dumps(p))

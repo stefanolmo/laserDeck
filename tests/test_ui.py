@@ -165,3 +165,16 @@ def test_hold_to_fire_needs_enable_and_switches_off(app, win):
     assert pump(app, lambda: win.conn._ser._spindle == "M3")
     win._fire_off()
     assert pump(app, lambda: win.conn._ser._spindle == "M5")
+
+
+def test_off_then_on_restores_previous_mode_and_settings(app, win):
+    c = load(app, win)
+    c._select({"disc"})
+    c.w["fill_power"].setValue(33.0)
+    c._set_field("mode", "both")
+    c._set_field("mode", "off")
+    assert c.settings["disc"].mode == "off" and c.btn_on.isVisibleTo(c)
+    c._turn_on()
+    st = c.settings["disc"]
+    assert st.mode == "both" and st.fill_power == 33.0
+    assert not c.btn_on.isVisibleTo(c)

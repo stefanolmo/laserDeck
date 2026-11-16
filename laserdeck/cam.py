@@ -26,6 +26,7 @@ MODES = ("off", "line", "fill", "both")
 @dataclass
 class PathSettings:
     mode: str = "line"             # off | line | fill | both (fill + line)
+    last_mode: str = "line"        # mode before switching to off: restored by the «On» button
     # line (outline)
     line_power: float = 30.0       # % of S max
     line_speed: float = 1000.0     # mm/min
