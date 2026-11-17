@@ -383,16 +383,16 @@ def test_machine_area_extends_from_the_zero_into_the_work_area(app, win):
     win.status = Status(state="Idle", mpos=(6.0, 6.0, 0.0), wpos=(0.0, 0.0, 0.0), wco=(6.0, 6.0, 0.0))   # zero set 5 mm inside
     win._update_envelope()
     lo, hi = win.view.envelope
-    assert tuple(lo) == (-6.0, -6.0) and tuple(hi) == (294.0, 194.0)      # switch edge at 0, work zero at 6
+    assert tuple(lo) == (-5.0, -5.0) and tuple(hi) == (293.0, 193.0)      # switch edge at 0 (+1 pull-off), work zero at 6
     # classic GRBL negative space, homed against the high end ($23=0): area is [-travel, 0]
     s = {22: 1, 23: 0, 27: 1.0, 130: 300.0, 131: 200.0}
     _homed_window(win, (-6.0, -6.0), s, rest=(-1.0, -1.0))
     win.status = Status(state="Idle", mpos=(-6.0, -6.0, 0.0), wco=(-6.0, -6.0, 0.0))
     win._update_envelope()
     lo, hi = win.view.envelope
-    assert tuple(lo) == (-294.0, -194.0) and tuple(hi) == (6.0, 6.0)
+    assert tuple(lo) == (-293.0, -193.0) and tuple(hi) == (5.0, 5.0)
     # no homing reference yet and positive machine coordinates
     win._home_mpos = None
     win.status = Status(state="Idle", mpos=(20.0, 10.0, 0.0), wco=(0.0, 0.0, 0.0))
     win._update_envelope()
-    assert tuple(win.view.envelope[1]) == (300.0, 200.0)
+    assert tuple(win.view.envelope[1]) == (299.0, 199.0)

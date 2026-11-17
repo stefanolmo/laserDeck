@@ -806,16 +806,18 @@ class MainWindow(QMainWindow):
             self.send(c)
 
     def _area_axis(self, i: int):
-        """(lo, hi) of the machine area on one axis, in machine coordinates."""
+        """(lo, hi) of the area the head can really use on one axis, in machine coordinates: the travel (`$130`/`$131`)
+        measured from the switch, minus the `$27` pull-off at both ends (the head never touches a switch)."""
         s = self.conn.settings
         travel = float(s[130 + i])
+        pull = float(s.get(27, 1.0) or 0.0)
         if self._home_mpos is not None:
             # measured: the switch sits `$27` mm behind where homing left the head; the area runs from there inward
             inward = 1.0 if int(s.get(23, 0) or 0) & (1 << i) else -1.0
-            edge = float(self._home_mpos[i]) - inward * float(s.get(27, 1.0) or 0.0)
-            return (edge, edge + travel) if inward > 0 else (edge - travel, edge)
+            edge = float(self._home_mpos[i]) - inward * pull
+            return (edge + pull, edge + travel - pull) if inward > 0 else (edge - travel + pull, edge - pull)
         # not homed in this session: classic GRBL has negative machine space, ESP32 firmwares may be positive
-        return (0.0, travel) if self.status.mpos[i] > 1.0 else (-travel, 0.0)
+        return (pull, travel - pull) if self.status.mpos[i] > 1.0 else (-travel + pull, -pull)
 
     def _update_envelope(self) -> None:
         """Machine area drawn in work coordinates (work = machine - WCO). Only with homing: without it the machine zero is
