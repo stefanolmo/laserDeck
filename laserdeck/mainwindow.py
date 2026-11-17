@@ -345,6 +345,18 @@ class MainWindow(QMainWindow):
             self.alarm_bar.layout().addWidget(w, 1 if w is self.alarm_label else 0)
         self.alarm_bar.hide()
         tv.addWidget(self.alarm_bar)
+        self.door_bar = self._bar(theme.WARN, "#3a2d0c", "#fde68a")
+        self.door_label = QLabel()
+        self.door_label.setWordWrap(True)
+        bd = QPushButton("Resume (~)")
+        bd.setToolTip("Cycle start: leaves the Door state if GRBL no longer sees the door input active")
+        bd.clicked.connect(lambda: self._rt(grbl.RT_RESUME))
+        br = QPushButton("Soft reset")
+        br.clicked.connect(self.soft_reset)
+        for w in (self.door_label, bd, br):
+            self.door_bar.layout().addWidget(w, 1 if w is self.door_label else 0)
+        self.door_bar.hide()
+        tv.addWidget(self.door_bar)
         self.error_bar = self._bar(theme.WARN, "#3a2d0c", "#fde68a")
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
@@ -568,6 +580,7 @@ class MainWindow(QMainWindow):
             self.status = Status()
             self.badge.set_state("Disconnected")
             self.alarm_bar.hide()
+            self.door_bar.hide()
             self.laser_bar.hide()
             self.console.append(msg, "error" if "Cannot open" in msg or "lost" in msg or "No response" in msg else "info")
             if "Errno 13" in msg or "ermission" in msg:
@@ -597,6 +610,7 @@ class MainWindow(QMainWindow):
         port = "Simulator" if self.port_combo.currentData() == SIM_PORT else self.port_combo.currentData()
         self.sb_state.setText(f"{port}  •  {st.state}" + (f"  •  Pin: {st.pins}" if st.pins else ""))
         self.sb_buf.setText(f"Buffer: planner {st.planner_free}  rx {st.rx_free}" if st.planner_free else "")
+        self._update_door_bar(st)
         if st.base_state == "Alarm":
             self.alarm_label.setText(self._alarm_text or "Machine in ALARM. Check the position, then unlock ($X) or run homing.")
             self.alarm_bar.show()
@@ -605,6 +619,22 @@ class MainWindow(QMainWindow):
             self._alarm_text = ""
         self._update_envelope()
         self._update_enabled()
+
+    def _update_door_bar(self, st: Status) -> None:
+        if st.base_state != "Door":
+            self.door_bar.hide()
+            return
+        sub = st.state.split(":")[1] if ":" in st.state else ""
+        pin = "D" in st.pins
+        if sub == "0" and not pin:
+            msg = "GRBL is in the Door state (door closed) and waits for a cycle start. Press Resume (~)."
+        else:
+            msg = ("GRBL reports the safety DOOR input as active" + (" (Pn:D)" if pin else "")
+                   + ". This laser has no door: the board is reading its door/feed-hold pin as triggered "
+                   "(floating or inverted input). Try Resume (~) or a soft reset; if the state comes back at once, "
+                   "the pin must be fixed in the firmware or wiring, GRBL offers no setting to ignore it.")
+        self.door_label.setText(msg + f"   [state: {st.state}   pins: {st.pins or '-'}]")
+        self.door_bar.show()
 
     def on_alarm(self, code: int, msg: str) -> None:
         self._alarm_text = f"ALARM {code}: {msg}"

@@ -42,6 +42,8 @@ class StateBadge(QLabel):
         labels = {"Disconnected": "Not connected", "Connecting": "Connecting…", "Idle": "Ready", "Run": "Running",
                   "Hold": "Paused", "Jog": "Jog", "Alarm": "ALARM", "Home": "Homing", "Check": "Check mode",
                   "Door": "Door open", "Sleep": "Sleep"}
+        if base == "Door" and ":" in state:      # Door:0 closed, waiting to resume · 1 open · 2 restoring · 3 retracting
+            labels["Door"] = {"0": "Door closed", "1": "Door open", "2": "Door: restoring", "3": "Door: retracting"}.get(state.split(":")[1], "Door")
         self.setText(text or labels.get(base, base))
         c = QColor(col)
         self.setStyleSheet(

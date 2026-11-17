@@ -179,3 +179,14 @@ def test_switch_off_then_on_restores_previous_mode_and_settings(app, win):
     c.chk_enabled.setChecked(True)
     st = c.settings["disc"]
     assert st.mode == "both" and st.fill_power == 33.0 and c.w["fill_power"].isEnabled()
+
+
+def test_door_state_shows_help_and_resume(app, win):
+    from laserdeck.grbl import Status
+    win.on_status(Status(state="Door:1", pins="D"))
+    assert win.door_bar.isVisibleTo(win) and "Pn:D" in win.door_label.text()
+    assert "Door open" in win.badge.text()
+    win.on_status(Status(state="Door:0"))
+    assert "Resume" in win.door_label.text() and "Door closed" in win.badge.text()
+    win.on_status(Status(state="Idle"))
+    assert not win.door_bar.isVisibleTo(win)
