@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._continuous = False
         self._firing = False
         self._door_reset_done = False
+        self._alarm_code = -1
         self._autohome_pending = False
         self._parse_serial = 0
         self._parse_thread: ParseThread | None = None
@@ -212,14 +213,14 @@ class MainWindow(QMainWindow):
         self.axes = {a: AxisRow(a) for a in "XY"}
         for a, r in self.axes.items():
             r.zeroClicked.connect(lambda ax: self.send(f"G10L20P0{ax}0"))
-            r.gotoClicked.connect(lambda ax: self.send(f"G90G0{ax}0"))
+            r.gotoClicked.connect(lambda ax: self.goto_zero(ax))
             c.body.addWidget(r)
         row = QHBoxLayout()
         b = QPushButton("Zero XY here")
         b.setToolTip("Set the work origin (X0 Y0) at the current head position")
         b.clicked.connect(lambda: self.send("G10L20P0X0Y0"))
         b2 = QPushButton("Go to XY 0")
-        b2.clicked.connect(lambda: self.send("G90G0X0Y0"))
+        b2.clicked.connect(lambda: self.goto_zero("XY"))
         for x in (b, b2):
             row.addWidget(x)
         c.body.addLayout(row)
@@ -645,6 +646,7 @@ class MainWindow(QMainWindow):
         else:
             self.alarm_bar.hide()
             self._alarm_text = ""
+            self._alarm_code = -1
         self._update_envelope()
         self._update_enabled()
 
@@ -679,7 +681,11 @@ class MainWindow(QMainWindow):
         self.door_bar.show()
 
     def on_alarm(self, code: int, msg: str) -> None:
+        self._alarm_code = code
         self._alarm_text = f"ALARM {code}: {msg}"
+        if code in (1, 2):
+            self._alarm_text += ("  →  move the head away from the limit switch with the jog pad (it unlocks by itself), "
+                                 "then run Homing.")
         self.alarm_label.setText(self._alarm_text)
         self.alarm_bar.show()
 
@@ -761,7 +767,7 @@ class MainWindow(QMainWindow):
         self.act_check.setEnabled(idle)
         self.act_settings.setEnabled(conn)
         self.act_reload.setEnabled(self.file_path is not None and not self._running)
-        self.pad.setEnabled(bool(conn and st in ("Idle", "Jog") and not self._running))
+        self.pad.setEnabled(bool(conn and not self._running and (st in ("Idle", "Jog") or (st == "Alarm" and self._alarm_code in (1, 2)))))
         for r in self.axes.values():
             r.setEnabled(bool(idle))
         self.chk_fire.setEnabled(bool(conn and st == "Idle" and not self._running) or self._firing)
@@ -897,27 +903,83 @@ class MainWindow(QMainWindow):
         s = self.conn.settings if self.conn else {}
         return float(s.get(130 + axis, 0) or 0) or 400.0
 
+    def _safe_bounds(self, axis: int):
+        """(lo, hi) machine coordinates the head may be sent to, or None without homing. After homing GRBL parks the head
+        `$27` mm from the limit switch and reports MPos = -$27: the machine zero is the switch itself, so commands must
+        stop a little before the switch end ($23 tells which end it is) or the hard limit alarms and the position is lost."""
+        s = self.conn.settings if self.conn else {}
+        if not s.get(22) or not s.get(130 + axis):
+            return None
+        lo, hi = -float(s[130 + axis]), 0.0
+        margin = float(s.get(27, 1.0) or 0.0) + 0.2
+        if int(s.get(23, 0) or 0) & (1 << axis):
+            lo += margin            # homes toward negative: the switch is at the -travel end
+        else:
+            hi -= margin
+        return lo, hi
+
+    def _clamp(self, axis: int, target: float, cur: float) -> float:
+        """Keep a machine-coordinate target inside the safe bounds, never reversing the requested direction."""
+        b = self._safe_bounds(axis)
+        if b is None:
+            return target
+        t = min(max(target, b[0]), b[1])
+        if (target - cur) > 0 and t < cur:
+            return cur
+        if (target - cur) < 0 and t > cur:
+            return cur
+        return t
+
+    def goto_zero(self, axes: str) -> None:
+        """Rapid to the work zero of the given axes, stopping short of the limit switch when the zero lies on it."""
+        if not self.connected:
+            self.console.append("Not connected", "error")
+            return
+        words = []
+        for a in axes:
+            i = "XY".index(a)
+            wco, cur = self.status.wco[i], self.status.mpos[i]
+            tgt_m = self._clamp(i, wco, cur)
+            if abs(tgt_m - wco) > 1e-3:
+                self.console.append(f"{a}0 is at the limit switch: stopping {abs(tgt_m - wco):.1f} mm short of it", "msg")
+            if abs(tgt_m - cur) > 1e-3:
+                words.append(f"{a}{tgt_m - wco:.3f}")
+        if words:
+            self.send("G90G0" + "".join(words))
+
     def on_jog_press(self, dx: int, dy: int, dz: int) -> None:
-        if not self.connected or self._running or self.status.base_state not in ("Idle", "Jog"):
+        st = self.status.base_state
+        unlock = st == "Alarm" and self._alarm_code in (1, 2)       # hard/soft limit: unlock, then move away
+        if not self.connected or self._running or not (st in ("Idle", "Jog") or unlock):
             return
         step = self.step_combo.currentData()
         feed = self.jog_feed.value()
-        s = self.conn.settings
-        words = []
         d = (dx, dy)
-        soft_limits = bool(s.get(20)) and bool(s.get(22)) and all(k in s for k in (130, 131))   # machine space [-travel, 0] only with homing
+        words = []
+        bounded = (not unlock) and all(self._safe_bounds(i) for i in range(2))
+        absolute = step is None and bounded
         for i, a in enumerate("XY"):
-            if d[i]:
-                if step is None and soft_limits:   # machine space is [-travel, 0]; stop just inside the limit
-                    target = -1.0 if d[i] > 0 else -(s[130 + i] - 1.0)
+            if not d[i]:
+                continue
+            cur = self.status.mpos[i]
+            if absolute:                                  # continuous: aim at the safe end, jog-cancel stops on release
+                lo, hi = self._safe_bounds(i)
+                target = self._clamp(i, hi if d[i] > 0 else lo, cur)
+                if abs(target - cur) > 1e-3:
                     words.append(f"{a}{target:.3f}")
-                else:
-                    words.append(f"{a}{d[i] * (step if step is not None else self._max_travel(i)):.3f}")
+            else:
+                dist = d[i] * (step if step is not None else self._max_travel(i))
+                if bounded:
+                    dist = self._clamp(i, cur + dist, cur) - cur
+                if abs(dist) > 1e-3:
+                    words.append(f"{a}{dist:.3f}")
         if not words:
             return
+        if unlock:
+            self.conn.send_line("$X", silent=True)
         if step is None:
             self._continuous = True
-        mode = "G53G21G90" if (step is None and soft_limits) else "G91G21"
+        mode = "G53G21G90" if absolute else "G91G21"
         self.conn.send_line(f"$J={mode}{''.join(words)}F{feed}", silent=True)
 
     def on_jog_release(self) -> None:

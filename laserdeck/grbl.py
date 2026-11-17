@@ -204,6 +204,7 @@ class GrblConnection(QThread):
         self._error_hold = False
         self._finish_when_idle = False
         self._reset_at = 0.0
+        self._ready = False
 
     # ---------- public API (main thread) ----------
     @property
@@ -353,6 +354,7 @@ class GrblConnection(QThread):
         self.connectionChanged.emit(True, f"Connected to {self.port}")
         for cmd in ("$I", "$$", "$G"):
             self._manual.append((cmd, -2))
+        self._ready = True
 
     def _handle_line_pre(self, line: str) -> None:
         if line.startswith("Grbl") or line.startswith("[VER") or line.startswith("<"):
@@ -444,6 +446,11 @@ class GrblConnection(QThread):
         self._stopping_at = None
         self.console.emit(line, "info")
         self.versionInfo.emit(line)
+        if self._ready:     # a reset wipes the replies still in flight: ask again so the settings are never lost
+            with self._lock:
+                for cmd in ("$$", "$G"):
+                    if (cmd, -2) not in self._manual:
+                        self._manual.append((cmd, -2))
         if self._running:
             with self._lock:
                 self._running = False
