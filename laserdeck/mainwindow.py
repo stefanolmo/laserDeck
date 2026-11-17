@@ -380,6 +380,17 @@ class MainWindow(QMainWindow):
             self.laser_bar.layout().addWidget(w, 1 if w is self.laser_label else 0)
         self.laser_bar.hide()
         tv.addWidget(self.laser_bar)
+        self.limits_bar = self._bar(theme.WARN, "#3a2d0c", "#fde68a")
+        self.limits_label = QLabel("Soft limits are ON ($20=1) but homing is off ($22=0). Without homing the machine zero is "
+                                   "wherever the head was at power-up, so GRBL refuses every move beyond that point (jog "
+                                   "error:15). Turn the soft limits off to move freely in both directions.")
+        self.limits_label.setWordWrap(True)
+        bs = QPushButton("Disable soft limits ($20=0)")
+        bs.clicked.connect(lambda: self.send("$20=0"))
+        for w in (self.limits_label, bs):
+            self.limits_bar.layout().addWidget(w, 1 if w is self.limits_label else 0)
+        self.limits_bar.hide()
+        tv.addWidget(self.limits_bar)
         self.view = LaserView()
         self.view.setStyleSheet("border: 1px solid %s; border-radius: 10px;" % theme.BORDER)
         tv.addWidget(self.view, 1)
@@ -584,6 +595,7 @@ class MainWindow(QMainWindow):
             self.alarm_bar.hide()
             self.door_bar.hide()
             self.laser_bar.hide()
+            self.limits_bar.hide()
             self.console.append(msg, "error" if "Cannot open" in msg or "lost" in msg or "No response" in msg else "info")
             if "Errno 13" in msg or "ermission" in msg:
                 QMessageBox.warning(self, APP_NAME,
@@ -660,6 +672,7 @@ class MainWindow(QMainWindow):
         if d.get(110) and d.get(111):
             self.jog_feed.setMaximum(int(max(d.get(110, 0), d.get(111, 0))))
         self.laser_bar.setVisible(d.get(32) == 0)
+        self.limits_bar.setVisible(bool(d.get(20)) and not d.get(22))
         self.view.s_max = float(d.get(30, 1000) or 1000)
         self.converter.set_machine(d.get(130), d.get(131), d.get(30))
         self._update_envelope()
@@ -869,7 +882,7 @@ class MainWindow(QMainWindow):
         s = self.conn.settings
         words = []
         d = (dx, dy)
-        soft_limits = bool(s.get(20)) and all(k in s for k in (130, 131))
+        soft_limits = bool(s.get(20)) and bool(s.get(22)) and all(k in s for k in (130, 131))   # machine space [-travel, 0] only with homing
         for i, a in enumerate("XY"):
             if d[i]:
                 if step is None and soft_limits:   # machine space is [-travel, 0]; stop just inside the limit

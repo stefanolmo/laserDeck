@@ -204,3 +204,12 @@ def test_door_at_connection_triggers_one_automatic_reset(app, win):
     win.on_status(Status(state="Door:0"))
     win.on_status(Status(state="Door:0"))
     assert n == [1]                                    # once only; afterwards the banner stays for the user
+
+
+def test_soft_limits_without_homing_show_fix(app, win):
+    win.on_settings({20: 1, 22: 0, 30: 1000, 32: 1})
+    assert win.limits_bar.isVisibleTo(win)
+    win.on_settings({20: 0, 22: 0, 30: 1000, 32: 1})
+    assert not win.limits_bar.isVisibleTo(win)
+    win.on_settings({20: 1, 22: 1, 30: 1000, 32: 1})
+    assert not win.limits_bar.isVisibleTo(win)
