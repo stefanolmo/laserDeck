@@ -805,13 +805,28 @@ class MainWindow(QMainWindow):
         for c in cmds:
             self.send(c)
 
+    def _area_axis(self, i: int):
+        """(lo, hi) of the machine area on one axis, in machine coordinates."""
+        s = self.conn.settings
+        travel = float(s[130 + i])
+        if self._home_mpos is not None:
+            # measured: the switch sits `$27` mm behind where homing left the head; the area runs from there inward
+            inward = 1.0 if int(s.get(23, 0) or 0) & (1 << i) else -1.0
+            edge = float(self._home_mpos[i]) - inward * float(s.get(27, 1.0) or 0.0)
+            return (edge, edge + travel) if inward > 0 else (edge - travel, edge)
+        # not homed in this session: classic GRBL has negative machine space, ESP32 firmwares may be positive
+        return (0.0, travel) if self.status.mpos[i] > 1.0 else (-travel, 0.0)
+
     def _update_envelope(self) -> None:
-        """Machine box in work coordinates. Only meaningful with homing ($22=1): without it the machine zero is
-        wherever the head was at power-up."""
+        """Machine area drawn in work coordinates (work = machine - WCO). Only with homing: without it the machine zero is
+        wherever the head was at power-up and the area is unknown."""
         s = self.conn.settings if self.conn else {}
         if all(k in s for k in (130, 131)) and s.get(22):
-            hi = -np.array(self.status.wco[:2])
-            lo = hi - np.array([s[130], s[131]])
+            lo, hi = [], []
+            for i in range(2):
+                a, b = self._area_axis(i)
+                lo.append(a - self.status.wco[i])
+                hi.append(b - self.status.wco[i])
             self.view.set_envelope(lo, hi)
         else:
             self.view.set_envelope(None, None)
