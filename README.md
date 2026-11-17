@@ -58,7 +58,7 @@ For each path (SVG shape) you choose:
 - **Order** (like most laser software): all the fills first, the lines last, inner contours before outer ones, nearest-neighbour travel.
   Passes of a group run one after the other (so a thick cut does not scorch a single spot). It can be switched to «as listed in the table».
 - **Job options**: S scale (the machine's `$30`, filled in automatically when connected), **M4 dynamic power** (recommended, needs `$32=1`) or M3,
-  **origin** (bottom-left / top-left / centre of the design, or the SVG page = position on the bed), air assist (`M8`/`M9`), return to X0 Y0.
+  **origin** (bottom-left / top-left / centre of the whole drawing, so switching paths on or off never moves it; or the SVG page = position on the bed), air assist (`M8`/`M9`), return to X0 Y0.
 - The generated G-code goes through the same parser and streaming as the Sender: the tests send it to the GRBL simulator and check that
   it runs without errors and that the laser never fires during a rapid move.
 

@@ -185,9 +185,10 @@ class Task:
         return self.points[0, 0] if self.kind == "fill" else self.points[0]
 
 
-def origin_point(doc: SvgDoc, enabled: set[str], job: Job) -> tuple[float, float]:
-    """Where the machine zero sits, in SVG coordinates (mm, y down)."""
-    b = doc.bounds(enabled)
+def origin_point(doc: SvgDoc, job: Job) -> tuple[float, float]:
+    """Where the machine zero sits, in SVG coordinates (mm, y down). It depends on the WHOLE drawing, not only on the
+    enabled paths, so switching paths on or off never moves the origin."""
+    b = doc.bounds()
     if not b:
         return (0.0, 0.0)
     (minx, miny), (maxx, maxy) = b
@@ -200,9 +201,9 @@ def origin_point(doc: SvgDoc, enabled: set[str], job: Job) -> tuple[float, float
     return (float(minx), float(maxy))                   # bottom-left of the design (default)
 
 
-def _transform_fn(doc: SvgDoc, enabled: set[str], job: Job):
+def _transform_fn(doc: SvgDoc, job: Job):
     """SVG (mm, y down) → machine coordinates: X = x − x0, Y = y0 − y (Y up, as on the machine)."""
-    ox, oy = origin_point(doc, enabled, job)
+    ox, oy = origin_point(doc, job)
 
     def f(p):
         return np.column_stack([p[:, 0] - ox, oy - p[:, 1]])
@@ -337,7 +338,7 @@ def generate(doc: SvgDoc, settings: dict[str, PathSettings], job: Job, name: str
         res.warnings.append("No path is enabled: set Line or Fill on at least one path")
         return res
     enabled = {s.sid for s in shapes}
-    tf = _transform_fn(doc, enabled, job)
+    tf = _transform_fn(doc, job)
     tasks: list[Task] = []
     for seq, sh in enumerate(shapes):
         st = settings[sh.sid]

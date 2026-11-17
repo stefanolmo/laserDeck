@@ -160,3 +160,18 @@ def test_open_path_fill_warns(doc):
 def test_power_s_mapping():
     w = cam.Writer(cam.Job(s_max=255))
     assert w.power_s(0) == 0 and w.power_s(100) == 255 and w.power_s(0.1) == 1 and w.power_s(50) == 128
+
+
+@pytest.mark.parametrize("origin,lo,hi", [
+    ("bottom-left", (10, 10), (40, 40)), ("top-left", (10, -40), (40, -10)), ("center", (-35, -15), (-5, 15))])
+def test_origin_depends_on_the_whole_drawing_not_on_enabled_paths(doc, origin, lo, hi):
+    """The disc (x 15..45, y 15..45 on a drawing spanning 5..95 x 5..55) lands at the same coordinates whether the
+    other paths are enabled or not."""
+    for st in (settings(doc, disc="line"),
+               {s_.sid: cam.PathSettings(mode="line") for s_ in doc.shapes}):
+        r = cam.generate(doc, st, cam.Job(origin=origin))
+        prog = parse_program(r.gcode)
+        pts = prog.path.end[prog.path.kind == BURN][:, :2]
+        # the disc is the smallest closed outline: pick the burned points inside its expected box
+        inside = pts[(pts[:, 0] >= lo[0] - 0.05) & (pts[:, 0] <= hi[0] + 0.05) & (pts[:, 1] >= lo[1] - 0.05) & (pts[:, 1] <= hi[1] + 0.05)]
+        assert np.allclose(inside.min(axis=0), lo, atol=0.05) and np.allclose(inside.max(axis=0), hi, atol=0.05)

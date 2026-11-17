@@ -558,11 +558,8 @@ class ConverterPage(QWidget):
 
     def _sync_design(self) -> None:
         self.design.set_modes({sid: st.mode for sid, st in self.settings.items()})
-        enabled = {sid for sid, st in self.settings.items() if st.mode != "off"}
-        if self.doc is not None and enabled:
-            self.design.origin = cam.origin_point(self.doc, enabled, self.job())
-        else:
-            self.design.origin = None
+        # the origin follows the whole drawing: switching paths on or off never moves it
+        self.design.origin = cam.origin_point(self.doc, self.job()) if self.doc is not None and self.doc.shapes else None
         self.design.update()
 
     def _table_selection(self) -> None:
