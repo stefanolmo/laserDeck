@@ -62,6 +62,9 @@ class MainWindow(QMainWindow):
         self._door_reset_done = False
         self._alarm_code = -1
         self._autohome_pending = False
+        self._homing_active = False
+        self._homing_seen = False
+        self._homing_t0 = 0.0
         self._parse_serial = 0
         self._parse_thread: ParseThread | None = None
         self._loading_text = False
@@ -145,7 +148,7 @@ class MainWindow(QMainWindow):
         self.act_stop = self._act("stop", "Stop", "Abort (hold + reset): the laser turns off", self.stop_program, "Ctrl+.")
         self.act_frame = self._act("frame", "Frame", "Trace the bounding box of the job (laser off or pointer power)",
                                    self.frame_job, "Ctrl+F")
-        self.act_home = self._act("home", "Home", "Homing cycle ($H)", lambda: self.send("$H"))
+        self.act_home = self._act("home", "Home", "Homing cycle ($H)", self.start_homing)
         self.act_unlock = self._act("unlock", "Unlock", "Clear the alarm ($X)", lambda: self.send("$X"))
         self.act_reset = self._act("reset", "Reset", "Soft reset (Ctrl-X)", self.soft_reset)
         self.act_check = self._act("check", "Check", "Check mode: simulate without moving ($C)", lambda: self.send("$C"),
@@ -203,10 +206,30 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_connect, 1)
         row.addWidget(self.badge)
         c.body.addLayout(row)
+        lv.addWidget(c)
+
+        c = Card("Homing")
         self.chk_autohome = QCheckBox("Home automatically after connecting")
-        self.chk_autohome.setToolTip("Runs the homing cycle ($H) as soon as the board is ready: the head goes to the limit "
-                                     "switches and the machine zero is set. Needs homing enabled ($22=1).")
+        self.chk_autohome.setToolTip("Runs the homing cycle ($H) as soon as the board is ready. Needs homing enabled ($22=1).")
         c.body.addWidget(self.chk_autohome)
+        self.chk_homezero = QCheckBox("After homing: move inward and set zero there")
+        self.chk_homezero.setToolTip("When the head has reached the limit switches (at startup or with the Home button) it "
+                                     "moves this many mm towards the work area on each axis and sets the work zero X0 Y0 "
+                                     "at that point. Positive = into the work area (the direction follows $23).")
+        c.body.addWidget(self.chk_homezero)
+        row = QHBoxLayout()
+        self.home_dx = self._spin(0, 200, 5.0, 1, " mm")
+        self.home_dy = self._spin(0, 200, 5.0, 1, " mm")
+        for lab, w_ in (("X", self.home_dx), ("Y", self.home_dy)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w_, 1)
+        c.body.addLayout(row)
+        row = QHBoxLayout()
+        self.btn_home = QPushButton("  Home now")
+        self.btn_home.setIcon(icon("home"))
+        self.btn_home.clicked.connect(self.start_homing)
+        row.addWidget(self.btn_home)
+        c.body.addLayout(row)
         lv.addWidget(c)
 
         c = Card("Position")
@@ -347,7 +370,7 @@ class MainWindow(QMainWindow):
         bu = QPushButton("Unlock ($X)")
         bu.clicked.connect(lambda: self.send("$X"))
         bh = QPushButton("Homing ($H)")
-        bh.clicked.connect(lambda: self.send("$H"))
+        bh.clicked.connect(self.start_homing)
         for w in (self.alarm_label, bu, bh):
             self.alarm_bar.layout().addWidget(w, 1 if w is self.alarm_label else 0)
         self.alarm_bar.hide()
@@ -501,6 +524,9 @@ class MainWindow(QMainWindow):
         self.step_combo.setCurrentIndex(int(self.qs.value("jog_step", 1)))
         self.chk_keys.setChecked(self.qs.value("keys", "false") == "true")
         self.chk_autohome.setChecked(self.qs.value("autohome", "false") == "true")
+        self.chk_homezero.setChecked(self.qs.value("homezero", "true") == "true")
+        self.home_dx.setValue(float(self.qs.value("home_dx", 5.0)))
+        self.home_dy.setValue(float(self.qs.value("home_dy", 5.0)))
         self.frame_power.setValue(float(self.qs.value("frame_power", 0.0)))
         self.frame_feed.setValue(int(self.qs.value("frame_feed", 3000)))
         self.fire_power.setValue(float(self.qs.value("fire_power", 1.0)))
@@ -519,6 +545,9 @@ class MainWindow(QMainWindow):
         self.qs.setValue("jog_step", self.step_combo.currentIndex())
         self.qs.setValue("keys", "true" if self.chk_keys.isChecked() else "false")
         self.qs.setValue("autohome", "true" if self.chk_autohome.isChecked() else "false")
+        self.qs.setValue("homezero", "true" if self.chk_homezero.isChecked() else "false")
+        self.qs.setValue("home_dx", self.home_dx.value())
+        self.qs.setValue("home_dy", self.home_dy.value())
         self.qs.setValue("frame_power", self.frame_power.value())
         self.qs.setValue("frame_feed", self.frame_feed.value())
         self.qs.setValue("fire_power", self.fire_power.value())
@@ -640,6 +669,7 @@ class MainWindow(QMainWindow):
             self.conn.reset()
         self._update_door_bar(st)
         self._maybe_autohome(st)
+        self._track_homing(st)
         if st.base_state == "Alarm":
             self.alarm_label.setText(self._alarm_text or "Machine in ALARM. Check the position, then unlock ($X) or run homing.")
             self.alarm_bar.show()
@@ -659,10 +689,45 @@ class MainWindow(QMainWindow):
         self._autohome_pending = False
         if self.conn.settings.get(22):
             self.console.append("Homing after connecting ($H)…", "info")
-            self.conn.send_line("$H")
+            self.start_homing()
         else:
             self.console.append("Auto-home skipped: homing is disabled on the board ($22=0). Enable it in the GRBL "
                                 "settings ($22=1) and set $23 for the direction of your limit switches.", "msg")
+
+    def start_homing(self) -> None:
+        if not self.connected or self._running:
+            return
+        self._homing_active, self._homing_seen, self._homing_t0 = True, False, time.monotonic()
+        self.send("$H")
+
+    def _track_homing(self, st: Status) -> None:
+        """Home → Idle means the cycle finished: then move inward and zero (if enabled)."""
+        if not self._homing_active:
+            return
+        b = st.base_state
+        if b == "Home":
+            self._homing_seen = True
+        elif b == "Idle" and self._homing_seen:
+            self._homing_active = False
+            self._after_homing()
+        elif b == "Alarm" and self._homing_seen:
+            self._homing_active = False                    # homing failed: do not move or zero anything
+        elif not self._homing_seen and time.monotonic() - self._homing_t0 > 8.0:
+            self._homing_active = False                    # $H was refused: never entered the Home state
+
+    def _after_homing(self) -> None:
+        if not self.chk_homezero.isChecked() or not self.connected:
+            return
+        mask = int(self.conn.settings.get(23, 0) or 0)
+        words = []
+        for i, (a, v) in enumerate((("X", self.home_dx.value()), ("Y", self.home_dy.value()))):
+            if v > 0:
+                words.append(f"{a}{(1 if mask & (1 << i) else -1) * v:.3f}")   # inward: away from the switch end
+        if words:
+            self.conn.send_line("G91G21G0" + "".join(words))
+            self.conn.send_line("G90")
+        self.conn.send_line("G10L20P0X0Y0")       # GRBL synchronises the planner here: the zero is set after the move
+        self.console.append("Homing done: moved " + (" ".join(words) or "0") + " mm and set XY zero there", "info")
 
     def _update_door_bar(self, st: Status) -> None:
         if st.base_state != "Door":
@@ -763,6 +828,7 @@ class MainWindow(QMainWindow):
         self.act_home.setEnabled(bool(conn and st in ("Idle", "Alarm") and self._homing_enabled()))
         self.act_home.setToolTip("Homing cycle ($H)" if self._homing_enabled() else "Homing is disabled on this machine ($22=0)")
         self.act_unlock.setEnabled(bool(conn and st == "Alarm"))
+        self.btn_home.setEnabled(self.act_home.isEnabled())
         self.act_reset.setEnabled(conn)
         self.act_check.setEnabled(idle)
         self.act_settings.setEnabled(conn)

@@ -312,3 +312,41 @@ def test_settings_are_requested_again_after_a_reset(app, win):
     n = win.conn._ser.log.count("$$")
     win.conn.reset()
     assert pump(app, lambda: win.conn._ser.log.count("$$") > n, 10)
+
+
+def test_after_homing_move_inward_and_zero(app, win):
+    from laserdeck.grbl import Status
+    c = _homed_window(win, (-1.0, -1.0))
+    win._homing_active, win._homing_t0 = True, time.monotonic()
+    win.chk_homezero.setChecked(True)
+    win.home_dx.setValue(3.0)
+    win.home_dy.setValue(4.0)
+    win._track_homing(Status(state="Alarm"))           # still the old alarm: nothing happens yet
+    assert c.sent == [] and win._homing_active
+    win._track_homing(Status(state="Home"))
+    win._track_homing(Status(state="Idle"))
+    assert c.sent == ["G91G21G0X-3.000Y-4.000", "G90", "G10L20P0X0Y0"]
+    assert not win._homing_active
+
+
+def test_after_homing_direction_follows_homing_mask(app, win):
+    from laserdeck.grbl import Status
+    c = _homed_window(win, (-399.0, -1.0), {22: 1, 23: 1, 27: 1.0, 130: 400.0, 131: 400.0})
+    win._homing_active, win._homing_seen = True, True
+    win.chk_homezero.setChecked(True)
+    win.home_dx.setValue(2.0)
+    win.home_dy.setValue(0.0)
+    win._track_homing(Status(state="Idle"))
+    assert c.sent == ["G91G21G0X2.000", "G90", "G10L20P0X0Y0"]
+
+
+def test_homing_failure_or_option_off_sets_no_zero(app, win):
+    from laserdeck.grbl import Status
+    c = _homed_window(win, (-1.0, -1.0))
+    win._homing_active, win._homing_seen = True, True
+    win._track_homing(Status(state="Alarm"))
+    assert c.sent == [] and not win._homing_active
+    win._homing_active, win._homing_seen = True, True
+    win.chk_homezero.setChecked(False)
+    win._track_homing(Status(state="Idle"))
+    assert c.sent == []
