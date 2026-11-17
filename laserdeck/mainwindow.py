@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self._paused_at = 0.0
         self._continuous = False
         self._firing = False
+        self._door_reset_done = False
         self._parse_serial = 0
         self._parse_thread: ParseThread | None = None
         self._loading_text = False
@@ -559,6 +560,7 @@ class MainWindow(QMainWindow):
         c.programState.connect(self.on_program_state)
         c.settingsChanged.connect(self.on_settings)
         c.alarmRaised.connect(self.on_alarm)
+        self._door_reset_done = False
         self.status = Status(state="Connecting")
         self.badge.set_state("Connecting")
         self.btn_connect.setText("Connecting…")
@@ -610,6 +612,11 @@ class MainWindow(QMainWindow):
         port = "Simulator" if self.port_combo.currentData() == SIM_PORT else self.port_combo.currentData()
         self.sb_state.setText(f"{port}  •  {st.state}" + (f"  •  Pin: {st.pins}" if st.pins else ""))
         self.sb_buf.setText(f"Buffer: planner {st.planner_free}  rx {st.rx_free}" if st.planner_free else "")
+        if st.base_state == "Door" and self.conn and not self._door_reset_done and not self._running:
+            # ESP32 boards often read the (missing) door input as open at power-up and work after one soft reset
+            self._door_reset_done = True
+            self.console.append("Door state right after connecting: automatic soft reset (once)", "info")
+            self.conn.reset()
         self._update_door_bar(st)
         if st.base_state == "Alarm":
             self.alarm_label.setText(self._alarm_text or "Machine in ALARM. Check the position, then unlock ($X) or run homing.")

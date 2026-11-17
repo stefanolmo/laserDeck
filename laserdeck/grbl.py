@@ -1,6 +1,7 @@
 """GRBL 1.1 protocol: real-time commands, character-counting streaming, status parsing (same engine as CNC Deck)."""
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import deque
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 import serial
 from PySide6.QtCore import QThread, Signal
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")     # colour codes in the ESP32 debug log
 RX_BUFFER = 127          # GRBL serial RX buffer (128) minus one, as recommended by the GRBL wiki
 SIM_PORT = "simulator"
 
@@ -385,7 +387,7 @@ class GrblConnection(QThread):
         self._rxbuf += data
         while b"\n" in self._rxbuf:
             raw, self._rxbuf = self._rxbuf.split(b"\n", 1)
-            line = raw.decode("ascii", "replace").strip()
+            line = ANSI_RE.sub("", raw.decode("ascii", "replace")).strip()
             if line:
                 handler(line)
 

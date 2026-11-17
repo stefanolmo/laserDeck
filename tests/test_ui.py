@@ -190,3 +190,17 @@ def test_door_state_shows_help_and_resume(app, win):
     assert "Resume" in win.door_label.text() and "Door closed" in win.badge.text()
     win.on_status(Status(state="Idle"))
     assert not win.door_bar.isVisibleTo(win)
+
+
+def test_door_at_connection_triggers_one_automatic_reset(app, win):
+    from laserdeck.grbl import Status, ANSI_RE
+    assert ANSI_RE.sub("", "\x1b[0;32mI (29091) gpio: GPIO[47]\x1b[0m") == "I (29091) gpio: GPIO[47]"
+    i = win.port_combo.findData("simulator")
+    win.port_combo.setCurrentIndex(i)
+    win.toggle_connection()
+    assert pump(app, lambda: win.connected and win.status.base_state == "Idle")
+    n = []
+    win.conn.reset = lambda: n.append(1)
+    win.on_status(Status(state="Door:0"))
+    win.on_status(Status(state="Door:0"))
+    assert n == [1]                                    # once only; afterwards the banner stays for the user
