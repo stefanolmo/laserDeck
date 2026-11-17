@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._continuous = False
         self._firing = False
         self._door_reset_done = False
+        self._autohome_pending = False
         self._parse_serial = 0
         self._parse_thread: ParseThread | None = None
         self._loading_text = False
@@ -201,6 +202,10 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_connect, 1)
         row.addWidget(self.badge)
         c.body.addLayout(row)
+        self.chk_autohome = QCheckBox("Home automatically after connecting")
+        self.chk_autohome.setToolTip("Runs the homing cycle ($H) as soon as the board is ready: the head goes to the limit "
+                                     "switches and the machine zero is set. Needs homing enabled ($22=1).")
+        c.body.addWidget(self.chk_autohome)
         lv.addWidget(c)
 
         c = Card("Position")
@@ -494,6 +499,7 @@ class MainWindow(QMainWindow):
         self.jog_feed.setValue(int(self.qs.value("jog_feed", 3000)))
         self.step_combo.setCurrentIndex(int(self.qs.value("jog_step", 1)))
         self.chk_keys.setChecked(self.qs.value("keys", "false") == "true")
+        self.chk_autohome.setChecked(self.qs.value("autohome", "false") == "true")
         self.frame_power.setValue(float(self.qs.value("frame_power", 0.0)))
         self.frame_feed.setValue(int(self.qs.value("frame_feed", 3000)))
         self.fire_power.setValue(float(self.qs.value("fire_power", 1.0)))
@@ -511,6 +517,7 @@ class MainWindow(QMainWindow):
         self.qs.setValue("jog_feed", self.jog_feed.value())
         self.qs.setValue("jog_step", self.step_combo.currentIndex())
         self.qs.setValue("keys", "true" if self.chk_keys.isChecked() else "false")
+        self.qs.setValue("autohome", "true" if self.chk_autohome.isChecked() else "false")
         self.qs.setValue("frame_power", self.frame_power.value())
         self.qs.setValue("frame_feed", self.frame_feed.value())
         self.qs.setValue("fire_power", self.fire_power.value())
@@ -572,6 +579,7 @@ class MainWindow(QMainWindow):
         c.settingsChanged.connect(self.on_settings)
         c.alarmRaised.connect(self.on_alarm)
         self._door_reset_done = False
+        self._autohome_pending = self.chk_autohome.isChecked()
         self.status = Status(state="Connecting")
         self.badge.set_state("Connecting")
         self.btn_connect.setText("Connecting…")
@@ -630,6 +638,7 @@ class MainWindow(QMainWindow):
             self.console.append("Door state right after connecting: automatic soft reset (once)", "info")
             self.conn.reset()
         self._update_door_bar(st)
+        self._maybe_autohome(st)
         if st.base_state == "Alarm":
             self.alarm_label.setText(self._alarm_text or "Machine in ALARM. Check the position, then unlock ($X) or run homing.")
             self.alarm_bar.show()
@@ -638,6 +647,20 @@ class MainWindow(QMainWindow):
             self._alarm_text = ""
         self._update_envelope()
         self._update_enabled()
+
+    def _maybe_autohome(self, st: Status) -> None:
+        """Once per connection, when the board is ready (settings read, not in Door/Home/Run): run $H."""
+        if not self._autohome_pending or not self.conn or self._running:
+            return
+        if 22 not in self.conn.settings or st.base_state not in ("Idle", "Alarm"):
+            return
+        self._autohome_pending = False
+        if self.conn.settings.get(22):
+            self.console.append("Homing after connecting ($H)…", "info")
+            self.conn.send_line("$H")
+        else:
+            self.console.append("Auto-home skipped: homing is disabled on the board ($22=0). Enable it in the GRBL "
+                                "settings ($22=1) and set $23 for the direction of your limit switches.", "msg")
 
     def _update_door_bar(self, st: Status) -> None:
         if st.base_state != "Door":

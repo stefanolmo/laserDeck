@@ -213,3 +213,19 @@ def test_soft_limits_without_homing_show_fix(app, win):
     assert not win.limits_bar.isVisibleTo(win)
     win.on_settings({20: 1, 22: 1, 30: 1000, 32: 1})
     assert not win.limits_bar.isVisibleTo(win)
+
+
+def test_auto_home_after_connecting(app, win, monkeypatch):
+    monkeypatch.setitem(simulator.DEFAULT_SETTINGS, 22, 1)
+    win.chk_autohome.setChecked(True)
+    win.port_combo.setCurrentIndex(win.port_combo.findData("simulator"))
+    win.toggle_connection()
+    assert pump(app, lambda: win.connected and "$H" in win.conn._ser.log, 10)
+
+
+def test_auto_home_skipped_when_homing_disabled(app, win):
+    win.chk_autohome.setChecked(True)
+    win.port_combo.setCurrentIndex(win.port_combo.findData("simulator"))
+    win.toggle_connection()                            # the simulator default is $22=0
+    assert pump(app, lambda: not win._autohome_pending and win.connected, 10)
+    assert "$H" not in win.conn._ser.log
