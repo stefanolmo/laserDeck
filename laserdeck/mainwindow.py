@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self._alarm_code = -1
         self._autohome_pending = False
         self._homing_active = False
+        self._home_mpos = None
         self._homing_seen = False
         self._homing_t0 = 0.0
         self._parse_serial = 0
@@ -212,6 +213,11 @@ class MainWindow(QMainWindow):
         self.chk_autohome = QCheckBox("Home automatically after connecting")
         self.chk_autohome.setToolTip("Runs the homing cycle ($H) as soon as the board is ready. Needs homing enabled ($22=1).")
         c.body.addWidget(self.chk_autohome)
+        self.chk_protect = QCheckBox("Keep away from the limit switches")
+        self.chk_protect.setToolTip("After homing, jog and «Go to 0» never take the head closer to the limit switches than the "
+                                    "homing rest position, so they cannot trigger a hard-limit alarm.")
+        self.chk_protect.setChecked(True)
+        c.body.addWidget(self.chk_protect)
         self.chk_homezero = QCheckBox("After homing: move inward and set zero there")
         self.chk_homezero.setToolTip("When the head has reached the limit switches (at startup or with the Home button) it "
                                      "moves this many mm towards the work area on each axis and sets the work zero X0 Y0 "
@@ -525,6 +531,7 @@ class MainWindow(QMainWindow):
         self.chk_keys.setChecked(self.qs.value("keys", "false") == "true")
         self.chk_autohome.setChecked(self.qs.value("autohome", "false") == "true")
         self.chk_homezero.setChecked(self.qs.value("homezero", "true") == "true")
+        self.chk_protect.setChecked(self.qs.value("protect", "true") == "true")
         self.home_dx.setValue(float(self.qs.value("home_dx", 5.0)))
         self.home_dy.setValue(float(self.qs.value("home_dy", 5.0)))
         self.frame_power.setValue(float(self.qs.value("frame_power", 0.0)))
@@ -546,6 +553,7 @@ class MainWindow(QMainWindow):
         self.qs.setValue("keys", "true" if self.chk_keys.isChecked() else "false")
         self.qs.setValue("autohome", "true" if self.chk_autohome.isChecked() else "false")
         self.qs.setValue("homezero", "true" if self.chk_homezero.isChecked() else "false")
+        self.qs.setValue("protect", "true" if self.chk_protect.isChecked() else "false")
         self.qs.setValue("home_dx", self.home_dx.value())
         self.qs.setValue("home_dy", self.home_dy.value())
         self.qs.setValue("frame_power", self.frame_power.value())
@@ -698,6 +706,7 @@ class MainWindow(QMainWindow):
         if not self.connected or self._running:
             return
         self._homing_active, self._homing_seen, self._homing_t0 = True, False, time.monotonic()
+        self._home_mpos = None
         self.send("$H")
 
     def _track_homing(self, st: Status) -> None:
@@ -709,6 +718,7 @@ class MainWindow(QMainWindow):
             self._homing_seen = True
         elif b == "Idle" and self._homing_seen:
             self._homing_active = False
+            self._home_mpos = tuple(st.mpos)              # where homing left the head: the closest it may get to the switch
             self._after_homing()
         elif b == "Alarm" and self._homing_seen:
             self._homing_active = False                    # homing failed: do not move or zero anything
@@ -747,6 +757,7 @@ class MainWindow(QMainWindow):
 
     def on_alarm(self, code: int, msg: str) -> None:
         self._alarm_code = code
+        self._home_mpos = None                       # an alarm can mean lost position: forget the homing reference
         self._alarm_text = f"ALARM {code}: {msg}"
         if code in (1, 2):
             self._alarm_text += ("  →  move the head away from the limit switch with the jog pad (it unlocks by itself), "
@@ -970,19 +981,17 @@ class MainWindow(QMainWindow):
         return float(s.get(130 + axis, 0) or 0) or 400.0
 
     def _safe_bounds(self, axis: int):
-        """(lo, hi) machine coordinates the head may be sent to, or None without homing. After homing GRBL parks the head
-        `$27` mm from the limit switch and reports MPos = -$27: the machine zero is the switch itself, so commands must
-        stop a little before the switch end ($23 tells which end it is) or the hard limit alarms and the position is lost."""
+        """(lo, hi) machine coordinates the head may be sent to, or None when there is nothing to protect.
+
+        Measured, not assumed: the position where the last homing cycle left the head (`$27` mm from the switch) is the
+        closest it may get to the limit switch; the end of the axis the switch is on follows `$23`. The sign of the
+        machine coordinates (negative space or positive space, depending on the firmware) does not matter."""
         s = self.conn.settings if self.conn else {}
-        if not s.get(22) or not s.get(130 + axis):
+        if not self.chk_protect.isChecked() or self._home_mpos is None or not s.get(22):
             return None
-        lo, hi = -float(s[130 + axis]), 0.0
-        margin = float(s.get(27, 1.0) or 0.0) + 0.2
-        if int(s.get(23, 0) or 0) & (1 << axis):
-            lo += margin            # homes toward negative: the switch is at the -travel end
-        else:
-            hi -= margin
-        return lo, hi
+        inward = 1.0 if int(s.get(23, 0) or 0) & (1 << axis) else -1.0     # direction away from the switch
+        rest = float(self._home_mpos[axis])
+        return (rest, float("inf")) if inward > 0 else (float("-inf"), rest)
 
     def _clamp(self, axis: int, target: float, cur: float) -> float:
         """Keep a machine-coordinate target inside the safe bounds, never reversing the requested direction."""
@@ -1007,7 +1016,7 @@ class MainWindow(QMainWindow):
             wco, cur = self.status.wco[i], self.status.mpos[i]
             tgt_m = self._clamp(i, wco, cur)
             if abs(tgt_m - wco) > 1e-3:
-                self.console.append(f"{a}0 is at the limit switch: stopping {abs(tgt_m - wco):.1f} mm short of it", "msg")
+                self.console.append(f"{a}0 is at or beyond the limit switch: stopping {abs(tgt_m - wco):.1f} mm short of it", "msg")
             if abs(tgt_m - cur) > 1e-3:
                 words.append(f"{a}{tgt_m - wco:.3f}")
         if words:
@@ -1022,31 +1031,29 @@ class MainWindow(QMainWindow):
         feed = self.jog_feed.value()
         d = (dx, dy)
         words = []
-        bounded = (not unlock) and all(self._safe_bounds(i) for i in range(2))
-        absolute = step is None and bounded
+        blocked = []
         for i, a in enumerate("XY"):
             if not d[i]:
                 continue
             cur = self.status.mpos[i]
-            if absolute:                                  # continuous: aim at the safe end, jog-cancel stops on release
-                lo, hi = self._safe_bounds(i)
-                target = self._clamp(i, hi if d[i] > 0 else lo, cur)
-                if abs(target - cur) > 1e-3:
-                    words.append(f"{a}{target:.3f}")
+            dist = d[i] * (step if step is not None else self._max_travel(i))
+            if not unlock:                                # a limit alarm means the position is lost: no clamping
+                dist = self._clamp(i, cur + dist, cur) - cur
+            if abs(dist) > 1e-3:
+                words.append(f"{a}{dist:.3f}")
             else:
-                dist = d[i] * (step if step is not None else self._max_travel(i))
-                if bounded:
-                    dist = self._clamp(i, cur + dist, cur) - cur
-                if abs(dist) > 1e-3:
-                    words.append(f"{a}{dist:.3f}")
+                blocked.append(f"{a}{'+' if d[i] > 0 else '-'}")
+        if blocked and not words:
+            self.console.append(f"Jog {' '.join(blocked)} not sent: the head is already at the homing rest position next to "
+                                "the limit switch (untick «Keep away from the limit switches» to override)", "msg")
+            return
         if not words:
             return
         if unlock:
             self.conn.send_line("$X", silent=True)
         if step is None:
             self._continuous = True
-        mode = "G53G21G90" if absolute else "G91G21"
-        self.conn.send_line(f"$J={mode}{''.join(words)}F{feed}", silent=True)
+        self.conn.send_line(f"$J=G91G21{''.join(words)}F{feed}", silent=True)
 
     def on_jog_release(self) -> None:
         if self._continuous:

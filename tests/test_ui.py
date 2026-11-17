@@ -252,44 +252,65 @@ class _FakeConn:
         return True
 
 
-def _homed_window(win, mpos, settings=None):
+def _homed_window(win, mpos, settings=None, rest=(-1.0, -1.0)):
     from laserdeck.grbl import Status
     win.conn = _FakeConn(settings or {22: 1, 23: 0, 27: 1.0, 130: 400.0, 131: 400.0, 20: 0})
     win.status = Status(state="Idle", mpos=(mpos[0], mpos[1], 0.0), wpos=(mpos[0], mpos[1], 0.0), wco=(0.0, 0.0, 0.0))
+    win._home_mpos = (rest[0], rest[1], 0.0)             # where the last homing cycle left the head
     win.step_combo.setCurrentIndex(win.step_combo.findData(5.0))
     return win.conn
 
 
 def test_goto_zero_never_drives_into_the_limit_switch(app, win):
     c = _homed_window(win, (-50.0, -50.0))
-    win.goto_zero("X")                                 # machine zero IS the switch: stop 1.2 mm short
-    assert c.sent == ["G90G0X-1.200"]
-    c.sent.clear()
-    _homed_window(win, (-1.0, -1.0))                   # parked 1 mm from the switch after homing: nothing to do
+    win.goto_zero("X")                                 # work zero = machine zero = the switch: stop at the rest position
+    assert c.sent == ["G90G0X-1.000"]
+    c = _homed_window(win, (-1.0, -1.0))               # already parked there: nothing to do
     win.goto_zero("XY")
-    assert win.conn.sent == []
+    assert c.sent == []
 
 
-def test_jog_is_clamped_at_the_switch_end(app, win):
+def test_jog_is_clamped_at_the_homing_rest_position(app, win):
     c = _homed_window(win, (-3.0, -100.0))
-    win.on_jog_press(1, 0, 0)                          # +5 mm would pass the switch: only 1.8 mm allowed
-    assert c.sent[-1].startswith("$J=G91G21X1.800")
+    win.on_jog_press(1, 0, 0)                          # +5 mm would pass the rest position: only 2 mm allowed
+    assert c.sent[-1].startswith("$J=G91G21X2.000")
     win.on_jog_press(-1, 0, 0)                         # away from the switch: unchanged
     assert c.sent[-1].startswith("$J=G91G21X-5.000")
-    c2 = _homed_window(win, (-1.2, -100.0))
-    win.on_jog_press(1, 0, 0)                          # already at the safe end: no command at all
+    c2 = _homed_window(win, (-1.0, -100.0))
+    win.on_jog_press(1, 0, 0)                          # at the rest position: nothing sent, but the user is told why
     assert c2.sent == []
 
 
-def test_homing_direction_mask_moves_the_protected_end(app, win):
-    s = {22: 1, 23: 1, 27: 1.0, 130: 400.0, 131: 400.0}     # X homes toward negative: switch at -travel
-    _homed_window(win, (-399.0, -10.0), s)
-    b = win._safe_bounds(0)
-    assert b == (-400.0 + 1.2, 0.0) and win._safe_bounds(1) == (-400.0, -1.2)
+def test_works_with_positive_machine_coordinates(app, win):
+    """ESP32 firmwares may report machine space as positive: the protection must not depend on the sign."""
+    s = {22: 1, 23: 3, 27: 1.0, 130: 400.0, 131: 400.0}     # both axes home toward negative: switches at the low end
+    c = _homed_window(win, (6.0, 6.0), s, rest=(1.0, 1.0))
+    win.on_jog_press(1, 0, 0)                          # inward = +: free
+    win.on_jog_press(0, -1, 0)                         # toward the switch: only 5 mm available (6 -> 1)
+    assert c.sent[0].startswith("$J=G91G21X5.000") and c.sent[1].startswith("$J=G91G21Y-5.000")
+    c = _homed_window(win, (2.0, 2.0), s, rest=(1.0, 1.0))
+    win.on_jog_press(-1, 0, 0)
+    assert c.sent[-1].startswith("$J=G91G21X-1.000")
 
 
-def test_without_homing_nothing_is_clamped(app, win):
+def test_directions_follow_the_homing_mask(app, win):
+    s = {22: 1, 23: 1, 27: 1.0, 130: 400.0, 131: 400.0}     # X homes toward negative: switch at the low end
+    _homed_window(win, (-399.0, -10.0), s, rest=(-399.0, -1.0))
+    assert win._safe_bounds(0) == (-399.0, float("inf")) and win._safe_bounds(1) == (float("-inf"), -1.0)
+
+
+def test_protection_off_or_not_homed_means_no_clamp(app, win):
+    c = _homed_window(win, (-3.0, -3.0))
+    win.chk_protect.setChecked(False)
+    win.on_jog_press(1, 0, 0)
+    assert c.sent[-1].startswith("$J=G91G21X5.000")
     c = _homed_window(win, (-3.0, -3.0), {22: 0, 130: 400.0, 131: 400.0})
+    win.chk_protect.setChecked(True)
+    win.on_jog_press(1, 0, 0)
+    assert c.sent[-1].startswith("$J=G91G21X5.000")
+    win._home_mpos = None                              # never homed in this session
+    c.sent.clear()
+    win.conn.settings = {22: 1, 23: 0, 27: 1.0}
     win.on_jog_press(1, 0, 0)
     assert c.sent[-1].startswith("$J=G91G21X5.000")
 
@@ -299,6 +320,7 @@ def test_jog_after_hard_limit_alarm_unlocks_first(app, win):
     c = _homed_window(win, (0.0, 0.0))
     win.status = Status(state="Alarm")
     win.on_alarm(1, "Hard limit")
+    assert win._home_mpos is None                      # position reference forgotten
     win._update_enabled()
     assert win.pad.isEnabled()                         # jog is allowed in a limit alarm
     win.on_jog_press(-1, 0, 0)
@@ -324,8 +346,9 @@ def test_after_homing_move_inward_and_zero(app, win):
     win._track_homing(Status(state="Alarm"))           # still the old alarm: nothing happens yet
     assert c.sent == [] and win._homing_active
     win._track_homing(Status(state="Home"))
-    win._track_homing(Status(state="Idle"))
+    win._track_homing(Status(state="Idle", mpos=(-1.0, -1.0, 0.0)))
     assert c.sent == ["G91G21G0X-3.000Y-4.000", "G90", "G10L20P0X0Y0"]
+    assert win._home_mpos[:2] == (-1.0, -1.0)           # remembered as the closest point to the switch
     assert not win._homing_active
 
 
