@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="90mm" height="90mm" viewBox="0 0 90 90">
+  <rect id="badge" x="5" y="5" width="80" height="80" rx="10" fill="none" stroke="#ff0000" stroke-width="0.3"/>
+  <circle id="ring" cx="45" cy="45" r="32" fill="none" stroke="#0000ff" stroke-width="0.3"/>
+  <path id="star" fill="#000000" d="M45 23 L50.2 37.6 L65.9 38.3 L53.6 48 L57.8 63 L45 54.4 L32.2 63 L36.4 48 L24.1 38.3 L39.8 37.6 Z"/>
+  <circle id="d1" cx="14" cy="14" r="3.5" fill="#000000"/>
+  <circle id="d2" cx="76" cy="14" r="3.5" fill="#000000"/>
+  <circle id="d3" cx="14" cy="76" r="3.5" fill="#000000"/>
+  <circle id="d4" cx="76" cy="76" r="3.5" fill="#000000"/>
+</svg>
