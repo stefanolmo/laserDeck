@@ -8,3 +8,4 @@ dist/
 promo/*.mp4
 promo/frames/
 promo/*.wav
+*.whl
